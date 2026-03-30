@@ -15,8 +15,8 @@ Vagrant.configure("2") do |config|
     apt-get update -y             # Update packages
     apt-get install -y apache2    # Install Apache
 
-    systemctl enable apache2      # Start Apache
-    systemctl start apache2       # Apache on startup
+    systemctl enable apache2      # Run Apache on startup
+    systemctl start apache2       # Start Apache
 
     echo "<h1>Hello World! - Vagrant VM</h1>" > /var/www/html/index.html  # Create a webpage
     echo "=== Installation Complete ==="
