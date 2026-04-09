@@ -1,0 +1,104 @@
+# Lab 3 - Two VMs with network segmentation (defense in depth)
+# Webserver (Apache) + Database (PostgreSQL), isolated by UFW firewall
+
+# Vagrant config block, API version "2" (current syntax standard).
+# "do" opens a code block closed by "end" at the bottom of the file.
+# |config| is our chosen variable name for the configuration object
+Vagrant.configure("2") do |config|
+
+  # config = our config variable, .vm = virtual machine, .box = which OS image to use.
+  # Downloaded from Vagrant Cloud automatically on first "vagrant up"
+  # Shared by both VMs so we only define it once
+  config.vm.box = "ubuntu/jammy64"
+
+  # ── VM 1: Webserver ──────────────────────────────────
+  # "define" creates a named VM inside the config block.
+  # "webserver" = the name, used with "vagrant ssh webserver"
+  # "do |web|" opens a block where "web" is our variable for this specific VM
+  config.vm.define "webserver" do |web|
+
+    # Sets the hostname inside this VM, shown as "vagrant@webserver"
+    web.vm.hostname = "webserver"
+
+    # Adds a Host-only network adapter, a private connection between Windows and the VMs.
+    # "ip:" assigns a static IP. Using .11 because .10 was Lab 2's VM
+    web.vm.network "private_network", ip: "192.168.56.11"
+
+    # Forwards Windows port 8080 (host) to VM port 80 (guest),
+    # so http://localhost:8080 reaches Apache in this VM
+    web.vm.network "forwarded_port", guest: 80, host: 8080
+
+    # Configures VirtualBox as the virtualization software.
+    # "do |vb|" opens a new block where "vb" is our variable for VirtualBox settings
+    web.vm.provider "virtualbox" do |vb|
+      vb.name   = "lab3-webserver"    # Display name in VirtualBox GUI
+      vb.memory = 512                 # RAM in MB (512 = 0.5 GB)
+      vb.cpus   = 1                   # CPU cores allocated to the VM
+    end                               # Closes the "do |vb|" block
+
+    # Runs this script inside the VM automatically on first "vagrant up".
+    # "shell" = run in bash (Linux terminal), "inline:" = script written here
+    web.vm.provision "shell", inline: <<-SHELL
+      apt-get update -y                                                   # Refresh available packages, -y = auto-confirm
+      apt-get install -y apache2 iputils-ping netcat-openbsd              # Install Apache web server + ping + nc (network test tools)
+      systemctl enable apache2                                            # Auto-start Apache on every boot (systemctl = Linux service manager)
+      systemctl start apache2                                             # Start Apache now
+      echo "<h1>Webserver: $(hostname)</h1>" > /var/www/html/index.html   # Create custom web page, "$(hostname)" inserts the VM name
+      echo "=== Webserver ready ==="                                      # Print confirmation message in terminal
+    SHELL
+  end                                 # Closes the "do |web|" webserver block
+
+  # ── VM 2: Database server ────────────────────────────
+  # "define" creates a second VM inside the same config block.
+  # "database" = the name, used with "vagrant ssh database"
+  # "do |db|" opens a block where "db" is our variable for this specific VM
+  config.vm.define "database" do |db|
+
+    # Sets the hostname inside this VM, shown as "vagrant@database"
+    db.vm.hostname = "database"
+
+    # Same private network as the webserver, but NO port forwarding.
+    # The database should only be reachable from the webserver, not from Windows.
+    # Note: Windows (192.168.56.1) can still reach this IP on host-only —
+    # UFW firewall (configured below) provides the actual isolation
+    db.vm.network "private_network", ip: "192.168.56.12"
+
+    # Configures VirtualBox as the virtualization software.
+    # "do |vb|" opens a new block where "vb" is our variable for VirtualBox settings
+    db.vm.provider "virtualbox" do |vb|
+      vb.name   = "lab3-database"     # Display name in VirtualBox GUI
+      vb.memory = 512                 # RAM in MB (512 = 0.5 GB)
+      vb.cpus   = 1                   # CPU cores allocated to the VM
+    end                               # Closes the "do |vb|" block
+
+    # Runs this script inside the VM automatically on first "vagrant up".
+    # "shell" = run in bash (Linux terminal), "inline:" = script written here
+    db.vm.provision "shell", inline: <<-SHELL
+      apt-get update -y                                        # Refresh available packages, -y = auto-confirm
+      apt-get install -y postgresql iputils-ping ufw           # Install PostgreSQL database + ping + UFW firewall
+      systemctl enable postgresql                              # Auto-start PostgreSQL on every boot
+      systemctl start postgresql                               # Start PostgreSQL now
+
+      # PostgreSQL only listens on localhost by default.
+      # Change listen_addresses to '*' so it accepts connections from the private network
+      PG_VERSION=$(ls /etc/postgresql/)                        # Auto-detect installed PostgreSQL version
+      sed -i "s/#listen_addresses = 'localhost'/listen_addresses = '*'/" \
+        /etc/postgresql/$PG_VERSION/main/postgresql.conf       # Replace default with listen on all interfaces
+
+      # Allow the webserver to authenticate and connect to PostgreSQL
+      echo "host all all 192.168.56.11/32 md5" \
+        >> /etc/postgresql/$PG_VERSION/main/pg_hba.conf        # Add webserver IP to allowed clients
+
+      systemctl restart postgresql                             # Restart to apply the new config
+
+      # UFW = Uncomplicated Firewall. Controls what network traffic is allowed in.
+      ufw default deny incoming                                # Block ALL incoming traffic by default
+      ufw default allow outgoing                               # Allow all outgoing traffic
+      ufw allow ssh                                            # Allow SSH so "vagrant ssh database" keeps working
+      ufw allow from 192.168.56.11 to any port 5432           # Allow PostgreSQL traffic ONLY from the webserver
+      ufw --force enable                                       # Turn on the firewall, --force skips confirmation prompt
+      echo "=== Database server ready ==="                     # Print confirmation message in terminal
+    SHELL
+  end                                                          # Closes the "do |db|" database block
+
+end                                                            # Closes the "do |config|" block from line 1
